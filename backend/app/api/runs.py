@@ -171,6 +171,14 @@ async def _execute_run(
         async for event in graph.astream(initial_state):
             # event is a dict mapping node_name -> output_dict
             for node_name, node_output in event.items():
+                if node_output is None:
+                    logger.debug(
+                        "[run:%s] Node '%s' emitted no state updates",
+                        run_id,
+                        node_name,
+                    )
+                    continue
+
                 elapsed = time.perf_counter() - t0
                 final_state.update(node_output)
                 progress = node_output.get("progress", [])

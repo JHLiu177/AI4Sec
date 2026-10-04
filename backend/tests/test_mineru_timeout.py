@@ -12,7 +12,18 @@ from app.services.mineru_adapter import (
     _poll_until_done_sync,
     _update_parse_poll_sync,
 )
+from app.api.runs import _execute_run
 from app.workflows.main_graph import mineru_parse
+
+
+class _GraphWithEmptyNodeOutput:
+    async def astream(self, initial_state: dict):
+        yield {"build_paper_ir": None}
+        yield {
+            "persist_output": {
+                "error": "MinerU parse failed: remote task timed out",
+            }
+        }
 
 
 class _AlwaysRunningClient:
@@ -112,6 +123,36 @@ class MinerUProgressEventTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row["poll_count"], 7)
             self.assertEqual(row["last_state_counts"], '{"running": 1}')
             self.assertTrue(row["last_poll_at"])
+
+    async def test_empty_graph_node_output_does_not_mask_mineru_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db.set_db_path(Path(tmp) / "app.db")
+            await db.init_db()
+            await db.execute(
+                "INSERT INTO papers (paper_id, file_path) VALUES (?, ?)",
+                ("paper", "papers/paper/original.pdf"),
+            )
+            await db.execute(
+                "INSERT INTO runs (run_id, paper_id, mode, language, status) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("run-1", "paper", "snap", "en", "pending"),
+            )
+
+            queue: asyncio.Queue = asyncio.Queue()
+            with patch("app.api.runs._run_queues", {"run-1": queue}), patch(
+                "app.api.runs._get_graph",
+                return_value=_GraphWithEmptyNodeOutput(),
+            ):
+                await _execute_run("run-1", "paper", "snap", "", "en", "")
+
+            events = []
+            while not queue.empty():
+                events.append(await queue.get())
+
+            self.assertIn(
+                {"event": "error", "data": {"error": "MinerU parse failed: remote task timed out"}},
+                events,
+            )
 
 
 if __name__ == "__main__":
